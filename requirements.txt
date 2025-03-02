@@ -64,12 +64,12 @@ jsonschema==4.23.0
 jsonschema-specifications==2024.10.1
 jsonschema_rs==0.25.1
 langchain-core==0.3.33
-langgraph==0.2.69
-langgraph-api==0.0.22
+langgraph==0.2.74
+langgraph-api==0.0.21
 langgraph-checkpoint==2.0.10
 langgraph-cli==0.1.71
 langgraph-sdk==0.1.51
-langsmith==0.3.6
+langsmith>=0.1.125,<0.3.0
 litellm==1.57.8
 logfire==3.1.0
 logfire-api==3.1.0
