@@ -4,35 +4,42 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 import logfire
 import asyncio
-import httpx
 import os
+import json
+import numpy as np
+import pandas as pd
+import lancedb
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.models.openai import OpenAIModel
 from openai import AsyncOpenAI
-from supabase import Client
 from typing import List
 
+# Load environment variables
 load_dotenv()
 
+# Initialize OpenAI model
 llm = os.getenv('LLM_MODEL', 'gpt-4o-mini')
 model = OpenAIModel(llm)
 
+# Configure logging
 logfire.configure(send_to_logfire='if-token-present')
+
+# Initialize LanceDB
+DB_PATH = "site_pages_lancedb"
+db = lancedb.connect(DB_PATH)
+table = db.open_table("site_pages")
 
 @dataclass
 class PydanticAIDeps:
-    supabase: Client
     openai_client: AsyncOpenAI
 
 system_prompt = """
 ~~ CONTEXT: ~~
-
 You are an expert at Pydantic AI - a Python AI agent framework that you have access to all the documentation to,
 including examples, an API reference, and other resources to help you build Pydantic AI agents.
 
 ~~ GOAL: ~~
-
 Your only job is to help the user create an AI agent with Pydantic AI.
 The user will describe the AI agent they want to build, or if they don't, guide them towards doing so.
 You will take their requirements, and then search through the Pydantic AI documentation with the tools provided
@@ -43,7 +50,6 @@ Almost never stick to just one page - use RAG and the other documentation tools 
 an AI agent from scratch for the user.
 
 ~~ STRUCTURE: ~~
-
 When you build an AI agent from scratch, split the agent into this files and give the code for each:
 - `agent.py`: The main agent file, which is where the Pydantic AI agent is defined.
 - `agent_tools.py`: A tools file for the agent, which is where all the tool functions are defined. Use this for more complex agents.
@@ -52,7 +58,6 @@ When you build an AI agent from scratch, split the agent into this files and giv
 - `requirements.txt`: Don't include any versions, just the top level package names needed for the agent.
 
 ~~ INSTRUCTIONS: ~~
-
 - Don't ask the user before taking an action, just do it. Always make sure you look at the documentation with the provided tools before writing any code.
 - When you first look at the documentation, always start with RAG.
 Then also always check the list of available documentation pages and retrieve the content of page(s) if it'll help.
@@ -84,35 +89,28 @@ async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
 @pydantic_ai_coder.tool
 async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_query: str) -> str:
     """
-    Retrieve relevant documentation chunks based on the query with RAG.
+    Retrieve relevant documentation chunks based on the query using vector search.
     
     Args:
-        ctx: The context including the Supabase client and OpenAI client
+        ctx: The context including the OpenAI client
         user_query: The user's question or query
         
     Returns:
         A formatted string containing the top 5 most relevant documentation chunks
     """
     try:
-        # Get the embedding for the query
+        # Get the query embedding
         query_embedding = await get_embedding(user_query, ctx.deps.openai_client)
         
-        # Query Supabase for relevant documents
-        result = ctx.deps.supabase.rpc(
-            'match_site_pages',
-            {
-                'query_embedding': query_embedding,
-                'match_count': 5,
-                'filter': {'source': 'pydantic_ai_docs'}
-            }
-        ).execute()
+        # Search LanceDB for relevant documents
+        results = table.search(query_embedding).where("metadata LIKE '%pydantic_ai_docs%'").limit(5).to_pandas()
         
-        if not result.data:
+        if results.empty:
             return "No relevant documentation found."
             
         # Format the results
         formatted_chunks = []
-        for doc in result.data:
+        for _, doc in results.iterrows():
             chunk_text = f"""
 # {doc['title']}
 
@@ -136,17 +134,9 @@ async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]
         List[str]: List of unique URLs for all documentation pages
     """
     try:
-        # Query Supabase for unique URLs where source is pydantic_ai_docs
-        result = ctx.deps.supabase.from_('site_pages') \
-            .select('url') \
-            .eq('metadata->>source', 'pydantic_ai_docs') \
-            .execute()
-        
-        if not result.data:
-            return []
-            
-        # Extract unique URLs
-        urls = sorted(set(doc['url'] for doc in result.data))
+        # Query LanceDB for unique URLs where source is 'pydantic_ai_docs'
+        results = table.to_pandas()
+        urls = sorted(set(results[results["metadata"].str.contains("pydantic_ai_docs")]["url"]))
         return urls
         
     except Exception as e:
@@ -159,33 +149,25 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
     Retrieve the full content of a specific documentation page by combining all its chunks.
     
     Args:
-        ctx: The context including the Supabase client
+        ctx: The context including the OpenAI client
         url: The URL of the page to retrieve
         
     Returns:
         str: The complete page content with all chunks combined in order
     """
     try:
-        # Query Supabase for all chunks of this URL, ordered by chunk_number
-        result = ctx.deps.supabase.from_('site_pages') \
-            .select('title, content, chunk_number') \
-            .eq('url', url) \
-            .eq('metadata->>source', 'pydantic_ai_docs') \
-            .order('chunk_number') \
-            .execute()
+        # Query LanceDB for all chunks of this URL, ordered by chunk_number
+        results = table.to_pandas()
+        page_chunks = results[(results["url"] == url) & (results["metadata"].str.contains("pydantic_ai_docs"))]
         
-        if not result.data:
+        if page_chunks.empty:
             return f"No content found for URL: {url}"
-            
-        # Format the page with its title and all chunks
-        page_title = result.data[0]['title'].split(' - ')[0]  # Get the main title
-        formatted_content = [f"# {page_title}\n"]
         
-        # Add each chunk's content
-        for chunk in result.data:
-            formatted_content.append(chunk['content'])
-            
-        # Join everything together
+        # Sort by chunk number and format the content
+        page_chunks = page_chunks.sort_values("chunk_number")
+        page_title = page_chunks.iloc[0]["title"].split(" - ")[0]  # Get main title
+        formatted_content = [f"# {page_title}\n"] + list(page_chunks["content"])
+        
         return "\n\n".join(formatted_content)
         
     except Exception as e:

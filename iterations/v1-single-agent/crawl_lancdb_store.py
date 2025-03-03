@@ -158,7 +158,7 @@ async def insert_chunks(chunks: List[ProcessedChunk]):
                 "content": chunk.content,
                 "metadata": json.dumps(chunk.metadata),  # Store as JSON string
                 "embedding": chunk.embedding,
-                "created_at": pd.Timestamp.utcnow()
+                "created_at": int(datetime.utcnow().timestamp() * 1000)  # Convert ns to ms
             }
             for idx, chunk in enumerate(chunks, start=int(datetime.utcnow().timestamp()))
         ])

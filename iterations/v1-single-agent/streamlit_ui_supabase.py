@@ -2,11 +2,11 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 import asyncio
 import os
+
+import streamlit as st
 import json
 import logfire
-import streamlit as st
-import lancedb
-
+from supabase import Client
 from openai import AsyncOpenAI
 
 # Import all the message part classes
@@ -29,11 +29,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Initialize LanceDB
-DB_PATH = "site_pages_lancedb"
-db = lancedb.connect(DB_PATH)
-table = db.open_table("site_pages")
+supabase: Client = Client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_KEY")
+)
 
 # Configure logfire to suppress warnings (optional)
 logfire.configure(send_to_logfire='never')
@@ -65,46 +64,6 @@ def display_message_part(part):
         with st.chat_message("assistant"):
             st.markdown(part.content)          
 
-async def get_embedding(text: str, openai_client: AsyncOpenAI) -> list[float]:
-    """Get embedding vector from OpenAI."""
-    try:
-        response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        print(f"Error getting embedding: {e}")
-        return [0] * 1536  # Return zero vector on error
-
-async def retrieve_relevant_documentation(user_query: str) -> str:
-    """
-    Retrieve relevant documentation chunks based on the query using LanceDB vector search.
-    """
-    try:
-        query_embedding = await get_embedding(user_query, openai_client)
-
-        # Search LanceDB for relevant documents
-        results = table.search(query_embedding).where("metadata LIKE '%pydantic_ai_docs%'").limit(5).to_pandas()
-
-        if results.empty:
-            return "No relevant documentation found."
-
-        # Format the results
-        formatted_chunks = []
-        for _, doc in results.iterrows():
-            chunk_text = f"""
-# {doc['title']}
-
-{doc['content']}
-"""
-            formatted_chunks.append(chunk_text)
-
-        return "\n\n---\n\n".join(formatted_chunks)
-
-    except Exception as e:
-        print(f"Error retrieving documentation: {e}")
-        return f"Error retrieving documentation: {str(e)}"
 
 async def run_agent_with_streaming(user_input: str):
     """
@@ -113,6 +72,7 @@ async def run_agent_with_streaming(user_input: str):
     """
     # Prepare dependencies
     deps = PydanticAIDeps(
+        supabase=supabase,
         openai_client=openai_client
     )
 
@@ -131,7 +91,14 @@ async def run_agent_with_streaming(user_input: str):
             partial_text += chunk
             message_placeholder.markdown(partial_text)
 
-        # Store the final response in session state
+        # Now that the stream is finished, we have a final result.
+        # Add new messages from this run, excluding user-prompt messages
+        filtered_messages = [msg for msg in result.new_messages() 
+                            if not (hasattr(msg, 'parts') and 
+                                    any(part.part_kind == 'user-prompt' for part in msg.parts))]
+        st.session_state.messages.extend(filtered_messages)
+
+        # Add the final response to the messages
         st.session_state.messages.append(
             ModelResponse(parts=[TextPart(content=partial_text)])
         )
