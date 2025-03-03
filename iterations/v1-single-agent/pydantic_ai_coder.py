@@ -102,7 +102,25 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         # Get the query embedding
         query_embedding = await get_embedding(user_query, ctx.deps.openai_client)
         
+        print(table.schema)  # Print schema to verify column names
+        
         # Search LanceDB for relevant documents
+        # results = table.search(query_embedding).where("metadata LIKE '%pydantic_ai_docs%'").limit(5).to_pandas()
+        # Ensure 'embedding' is the vector column name
+        # results = table.search(query_embedding, vector_column="embedding") \
+        #     .where("metadata LIKE '%pydantic_ai_docs%'") \
+        #     .limit(5) \
+        #     .to_pandas()
+        
+        # Ensure query_embedding is a list of floats
+        assert isinstance(query_embedding, list), "query_embedding must be a list"
+        assert all(isinstance(x, float) for x in query_embedding), "query_embedding must contain only floats"
+
+        print(lancedb.__version__)
+        print(f"Vector columns: {table.vector_column_names}")
+
+        
+        # Run vector search
         results = table.search(query_embedding).where("metadata LIKE '%pydantic_ai_docs%'").limit(5).to_pandas()
         
         if results.empty:
@@ -112,10 +130,10 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         formatted_chunks = []
         for _, doc in results.iterrows():
             chunk_text = f"""
-# {doc['title']}
+            # {doc['title']}
 
-{doc['content']}
-"""
+            {doc['content']}
+            """
             formatted_chunks.append(chunk_text)
             
         # Join all chunks with a separator
@@ -157,8 +175,26 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
     """
     try:
         # Query LanceDB for all chunks of this URL, ordered by chunk_number
+        # results = table.to_pandas()
+        # page_chunks = results[(results["url"] == url) & (results["metadata"].str.contains("pydantic_ai_docs"))]
+        
+        # Convert LanceDB results to a Pandas DataFrame
         results = table.to_pandas()
-        page_chunks = results[(results["url"] == url) & (results["metadata"].str.contains("pydantic_ai_docs"))]
+
+        # Ensure metadata is stored as a string for filtering
+        results["metadata"] = results["metadata"].apply(lambda x: json.dumps(x) if isinstance(x, dict) else str(x))
+
+        # Debug: Print some metadata to check the format
+        print(results[["url", "metadata"]].head())
+
+        # Now filter the DataFrame
+        page_chunks = results[
+            (results["url"] == url) & 
+            (results["metadata"].str.contains("pydantic_ai_docs", na=False))
+        ]
+
+        # Debug: Print filtered results
+        print(f"Filtered {len(page_chunks)} chunks for URL: {url}")
         
         if page_chunks.empty:
             return f"No content found for URL: {url}"
@@ -173,3 +209,20 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
     except Exception as e:
         print(f"Error retrieving page content: {e}")
         return f"Error retrieving page content: {str(e)}"
+    
+# get user input and run
+async def main():
+    """
+    Main function to run the agent and interact with the user.
+    """
+    user_input = "I want to build an agent that can tell me the weather."
+    async with pydantic_ai_coder.run_stream(user_input, deps=PydanticAIDeps(openai_client=AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY")))) as result:
+        async for chunk in result.stream_text(delta=True):
+            print(chunk, end="", flush=True)
+        print("\n\n")
+        print("New messages:")
+        for msg in result.new_messages():
+            print(msg)
+
+if __name__ == "__main__":
+    asyncio.run(main())

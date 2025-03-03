@@ -84,8 +84,15 @@ async def retrieve_relevant_documentation(user_query: str) -> str:
     try:
         query_embedding = await get_embedding(user_query, openai_client)
 
+        print(table.schema)  # Print schema to verify column names
+        
         # Search LanceDB for relevant documents
-        results = table.search(query_embedding).where("metadata LIKE '%pydantic_ai_docs%'").limit(5).to_pandas()
+       # results = table.search(query_embedding).where("metadata LIKE '%pydantic_ai_docs%'").limit(5).to_pandas()
+        # Ensure 'embedding' is the vector column name
+        results = table.search(query_embedding, vector_column="embedding") \
+            .where("metadata LIKE '%pydantic_ai_docs%'") \
+            .limit(5) \
+            .to_pandas()
 
         if results.empty:
             return "No relevant documentation found."
@@ -94,10 +101,10 @@ async def retrieve_relevant_documentation(user_query: str) -> str:
         formatted_chunks = []
         for _, doc in results.iterrows():
             chunk_text = f"""
-# {doc['title']}
+            # {doc['title']}
 
-{doc['content']}
-"""
+            {doc['content']}
+            """
             formatted_chunks.append(chunk_text)
 
         return "\n\n---\n\n".join(formatted_chunks)

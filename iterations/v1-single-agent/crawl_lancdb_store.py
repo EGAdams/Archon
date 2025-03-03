@@ -29,7 +29,7 @@ openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 DB_PATH = "site_pages_lancedb"
 db = lancedb.connect(DB_PATH)
 
-# Define LanceDB schema (if table does not exist)
+# Define LanceDB schema with explicit vector size
 schema = pa.schema([
     pa.field("id", pa.int64()),  
     pa.field("url", pa.string()),  
@@ -38,16 +38,18 @@ schema = pa.schema([
     pa.field("summary", pa.string()),  
     pa.field("content", pa.string()),  
     pa.field("metadata", pa.string()),  # Ensure JSON is stored as a string
-    pa.field("embedding", pa.list_(pa.float32())),  # No need to specify 1536 explicitly
-    pa.field("created_at", pa.timestamp("ms"))  # Ensure timestamp values are in ms before inserting
+    pa.field("embedding", pa.list_(pa.float32(), 1536)),  # Explicit 1536-dim vector
+    pa.field("created_at", pa.timestamp("ms"))  # Correct timestamp storage (ms precision)
 ])
 
 
 # Create the table if it doesn't exist
 if "site_pages" not in db.table_names():
     table = db.create_table("site_pages", schema=schema, mode="create")
+    print("✅ Table created successfully.")
 else:
     table = db.open_table("site_pages")
+    print("✅ Table loaded successfully.")
 
 @dataclass
 class ProcessedChunk:
@@ -158,14 +160,16 @@ async def insert_chunks(chunks: List[ProcessedChunk]):
                 "content": chunk.content,
                 "metadata": json.dumps(chunk.metadata),  # Store as JSON string
                 "embedding": chunk.embedding,
-                "created_at": int(datetime.utcnow().timestamp() * 1000)  # Convert ns to ms
+                # Floor the timestamp to ms precision
+                "created_at": pd.Timestamp.utcnow().floor("ms")
             }
             for idx, chunk in enumerate(chunks, start=int(datetime.utcnow().timestamp()))
         ])
+        
         table.add(data)
-        print(f"Inserted {len(chunks)} chunks into LanceDB")
+        print(f"✅ Inserted {len(chunks)} chunks into LanceDB.")
     except Exception as e:
-        print(f"Error inserting chunks: {e}")
+        print(f"❌ Error inserting chunks: {e}")
 
 async def process_and_store_document(url: str, markdown: str):
     """Process a document and store its chunks in parallel."""
@@ -181,7 +185,8 @@ async def crawl_parallel(urls: List[str], max_concurrent: int = 5):
         verbose=False,
         extra_args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"],
     )
-    crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS)
+    # Increase the timeout to 120000ms (2 minutes) instead of the default 60000ms.
+    crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, page_timeout=120000)
 
     crawler = AsyncWebCrawler(config=browser_config)
     await crawler.start()
@@ -191,12 +196,16 @@ async def crawl_parallel(urls: List[str], max_concurrent: int = 5):
 
         async def process_url(url: str):
             async with semaphore:
-                result = await crawler.arun(url=url, config=crawl_config, session_id="session1")
-                if result.success:
-                    print(f"Successfully crawled: {url}")
-                    await process_and_store_document(url, result.markdown_v2.raw_markdown)
-                else:
-                    print(f"Failed: {url} - Error: {result.error_message}")
+                try:
+                    result = await crawler.arun(url=url, config=crawl_config, session_id="session1")
+                    if result.success:
+                        print(f"Successfully crawled: {url}")
+                        await process_and_store_document(url, result.markdown_v2.raw_markdown)
+                    else:
+                        print(f"Failed: {url} - Error: {result.error_message}")
+                except Exception as e:
+                    # Catch any exceptions (including timeouts) so the crawl continues.
+                    print(f"Failed: {url} - Error: {e}")
 
         await asyncio.gather(*[process_url(url) for url in urls])
     finally:
@@ -215,6 +224,46 @@ def get_pydantic_ai_docs_urls() -> List[str]:
         print(f"Error fetching sitemap: {e}")
         return []
 
+async def process_single_url(url: str, page_timeout: int = 120000):
+    """
+    Process and store the document for a single URL.
+    
+    Args:
+        url (str): The URL to crawl and process.
+        page_timeout (int): Timeout in milliseconds for the page load (default is 120000 ms).
+    
+    This function:
+      1. Instantiates and starts a crawler.
+      2. Crawls the given URL using the specified timeout.
+      3. If successful, processes the page content into chunks and inserts them into LanceDB.
+      4. Handles any errors gracefully, so you can retry the URL later.
+    """
+    from crawl4ai import BrowserConfig, CrawlerRunConfig, CacheMode
+    # Configure the browser and crawler settings
+    browser_config = BrowserConfig(
+        headless=True,
+        verbose=False,
+        extra_args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"],
+    )
+    crawl_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, page_timeout=page_timeout)
+    
+    # Create a new crawler instance for this URL
+    crawler = AsyncWebCrawler(config=browser_config)
+    await crawler.start()
+    
+    try:
+        result = await crawler.arun(url=url, config=crawl_config, session_id="single_url_session")
+        if result.success:
+            print(f"Successfully crawled: {url}")
+            # Process and store the document (splits into chunks and inserts into LanceDB)
+            await process_and_store_document(url, result.markdown_v2.raw_markdown)
+        else:
+            print(f"Failed: {url} - Error: {result.error_message}")
+    except Exception as e:
+        print(f"Failed: {url} - Exception: {e}")
+    finally:
+        await crawler.close()
+
 async def main():
     urls = get_pydantic_ai_docs_urls()
     if not urls:
@@ -225,3 +274,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
+    # Below for processing a single url that we may have missed
+    # import asyncio
+    # test_url = "https://ai.pydantic.dev/contributing/"
+    # asyncio.run(process_single_url(test_url))

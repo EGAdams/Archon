@@ -9,3 +9,4 @@ venv
 .env.temp
 .env.test
 env_vars.json
+iterations/v1-single-agent/site_pages_lancedb/
