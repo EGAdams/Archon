@@ -26,7 +26,8 @@ model = OpenAIModel(llm)
 logfire.configure(send_to_logfire='if-token-present')
 
 # Initialize LanceDB
-DB_PATH = "site_pages_lancedb"
+# DB_PATH = "site_pages_lancedb"
+DB_PATH = "/home/adamsl/archon/iterations/v1-single-agent/site_pages_lancedb"
 db = lancedb.connect(DB_PATH)
 table = db.open_table("site_pages")
 
@@ -34,38 +35,8 @@ table = db.open_table("site_pages")
 class PydanticAIDeps:
     openai_client: AsyncOpenAI
 
-system_prompt = """
-~~ CONTEXT: ~~
-You are an expert at Pydantic AI - a Python AI agent framework that you have access to all the documentation to,
-including examples, an API reference, and other resources to help you build Pydantic AI agents.
-
-~~ GOAL: ~~
-Your only job is to help the user create an AI agent with Pydantic AI.
-The user will describe the AI agent they want to build, or if they don't, guide them towards doing so.
-You will take their requirements, and then search through the Pydantic AI documentation with the tools provided
-to find all the necessary information to create the AI agent with correct code.
-
-It's important for you to search through multiple Pydantic AI documentation pages to get all the information you need.
-Almost never stick to just one page - use RAG and the other documentation tools multiple times when you are creating
-an AI agent from scratch for the user.
-
-~~ STRUCTURE: ~~
-When you build an AI agent from scratch, split the agent into this files and give the code for each:
-- `agent.py`: The main agent file, which is where the Pydantic AI agent is defined.
-- `agent_tools.py`: A tools file for the agent, which is where all the tool functions are defined. Use this for more complex agents.
-- `agent_prompts.py`: A prompts file for the agent, which includes all system prompts and other prompts used by the agent. Use this when there are many prompts or large ones.
-- `.env.example`: An example `.env` file - specify each variable that the user will need to fill in and a quick comment above each one for how to do so.
-- `requirements.txt`: Don't include any versions, just the top level package names needed for the agent.
-
-~~ INSTRUCTIONS: ~~
-- Don't ask the user before taking an action, just do it. Always make sure you look at the documentation with the provided tools before writing any code.
-- When you first look at the documentation, always start with RAG.
-Then also always check the list of available documentation pages and retrieve the content of page(s) if it'll help.
-- Always let the user know when you didn't find the answer in the documentation or the right URL - be honest.
-- Helpful tip: when starting a new AI agent build, it's a good idea to look at the 'weather agent' in the docs as an example.
-- When starting a new AI agent build, always produce the full code for the AI agent - never tell the user to finish a tool/function.
-- When refining an existing AI agent build in a conversation, just share the code changes necessary.
-"""
+with open("system_prompt.md", "r") as file:
+    system_prompt = file.read()
 
 pydantic_ai_coder = Agent(
     model,
@@ -117,7 +88,10 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         assert all(isinstance(x, float) for x in query_embedding), "query_embedding must contain only floats"
 
         print(lancedb.__version__)
-        print(f"Vector columns: {table.vector_column_names}")
+        
+        print(dir(table))
+
+        # print(f"Vector columns: {table.vector_column_names}")
 
         
         # Run vector search
@@ -137,6 +111,10 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
             formatted_chunks.append(chunk_text)
             
         # Join all chunks with a separator
+        # write formatted chunks to formatted_chunks file
+        with open( "formatted_chunks.md", 'w') as file:
+            file.write("\n\n".join(formatted_chunks))
+        
         return "\n\n---\n\n".join(formatted_chunks)
         
     except Exception as e:
@@ -204,8 +182,11 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
         page_title = page_chunks.iloc[0]["title"].split(" - ")[0]  # Get main title
         formatted_content = [f"# {page_title}\n"] + list(page_chunks["content"])
         
-        return "\n\n".join(formatted_content)
+        with open( "formatted_content.md", 'w') as file:
+            file.write("\n\n".join(formatted_content))
         
+        return "\n\n".join(formatted_content)
+    
     except Exception as e:
         print(f"Error retrieving page content: {e}")
         return f"Error retrieving page content: {str(e)}"

@@ -42,7 +42,7 @@ router_agent = Agent(
 
 end_conversation_agent = Agent(  
     OpenAIModel(primary_llm_model, base_url=base_url, api_key=api_key),
-    system_prompt='Your job is to end a conversation for creating an AI agent by giving instructions for how to execute the agent and they saying a nice goodbye to the user.',  
+    system_prompt='Your job is to end a conversation for creating an AI agent by giving instructions for how to execute the agent and then saying a nice goodbye to the user.',  
 )
 
 openai_client=None
