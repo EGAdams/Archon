@@ -31,7 +31,7 @@ embedding_model = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 logfire.configure(send_to_logfire='if-token-present')
 
 # Initialize LanceDB
-DB_PATH = "/path/to/site_pages_lancedb"  # <-- Update path to your LanceDB directory
+DB_PATH = "/home/adamsl/archon/iterations/v1-single-agent/site_pages_lancedb"  # <-- Update path to your LanceDB directory
 db = lancedb.connect(DB_PATH)
 table = db.open_table("site_pages")
 
@@ -121,33 +121,45 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         print(f"Error retrieving documentation: {e}")
         return f"Error retrieving documentation: {str(e)}"
 
-@pydantic_ai_coder.tool
-async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]:
+async def list_documentation_pages_helper(table: lancedb.LanceTable) -> List[str]:
     """
-    Retrieve a list of all available Pydantic AI documentation pages.
+    Function to retrieve a list of all available Pydantic AI documentation pages
+    from LanceDB. This is called by the list_documentation_pages tool and also 
+    externally to fetch documentation pages for the reasoner LLM.
     
     Returns:
         List[str]: List of unique URLs for all documentation pages
     """
     try:
-        # Pull all records and convert to a Pandas DataFrame
-        df = ctx.deps.table.to_pandas()
-        
-        # Ensure metadata is a string for searching
+        # Convert the table to a DataFrame
+        df = table.to_pandas()
+
+        # Convert metadata to string (for searching)
         df["metadata"] = df["metadata"].apply(
             lambda x: json.dumps(x) if isinstance(x, dict) else str(x)
         )
-        
-        # Filter to only docs from 'pydantic_ai_docs'
-        pydantic_docs = df[df["metadata"].str.contains("pydantic_ai_docs", na=False)]
-        
+
+        # Filter to only those records with source = 'pydantic_ai_docs'
+        docs = df[df["metadata"].str.contains("pydantic_ai_docs", na=False)]
+
         # Extract unique URLs
-        urls = sorted(set(pydantic_docs["url"]))
+        urls = sorted(set(docs["url"]))
         return urls
         
     except Exception as e:
         print(f"Error retrieving documentation pages: {e}")
-        return []        
+        return []
+
+@pydantic_ai_coder.tool
+async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]:
+    """
+    Retrieve a list of all available Pydantic AI documentation pages, using 
+    LanceDB for the data query.
+    
+    Returns:
+        List[str]: List of unique URLs for all documentation pages
+    """
+    return await list_documentation_pages_helper(ctx.deps.table)   
 
 @pydantic_ai_coder.tool
 async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:

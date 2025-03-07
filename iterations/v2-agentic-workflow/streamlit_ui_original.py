@@ -1,17 +1,14 @@
 from __future__ import annotations
-
 from typing import Literal, TypedDict
 from langgraph.types import Command
 from openai import AsyncOpenAI
+from supabase import Client
 import streamlit as st
 import logfire
 import asyncio
 import json
 import uuid
 import os
-
-# LanceDB imports
-import lancedb
 
 # Import all the message part classes
 from pydantic_ai.messages import (
@@ -33,23 +30,24 @@ from archon_graph import agentic_flow
 from dotenv import load_dotenv
 load_dotenv()
 
-openai_client = None
+openai_client=None
+
 base_url = os.getenv('BASE_URL', 'https://api.openai.com/v1')
 api_key = os.getenv('LLM_API_KEY', 'no-llm-api-key-provided')
 is_ollama = "localhost" in base_url.lower()
 
 if is_ollama:
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    openai_client = AsyncOpenAI(base_url=base_url,api_key=api_key)
 else:
     openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+supabase: Client = Client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_KEY")
+)
+
 # Configure logfire to suppress warnings (optional)
 logfire.configure(send_to_logfire='never')
-
-# Initialize LanceDB
-DB_PATH = "/home/adamsl/archon/iterations/v1-single-agent/site_pages_lancedb"  # Make sure that this is the correct path to the local LanceDB.
-db = lancedb.connect(DB_PATH)
-table = db.open_table("site_pages")
 
 @st.cache_resource
 def get_thread_id():
